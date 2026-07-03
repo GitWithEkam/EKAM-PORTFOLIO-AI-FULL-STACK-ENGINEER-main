@@ -31,8 +31,10 @@ export default function BotAvatar({
           src="/bot-avatar.png"
           alt="Singh AI assistant"
           draggable={false}
+          decoding="async"
+          loading="eager"
           className="h-full w-full select-none object-cover"
-          style={{ objectPosition, transform: `scale(${scale})` }}
+          style={{ objectPosition, transform: `scale(${scale})`, WebkitTransform: `scale(${scale})`, backgroundColor: '#0F172A' }}
         />
       </span>
     </span>

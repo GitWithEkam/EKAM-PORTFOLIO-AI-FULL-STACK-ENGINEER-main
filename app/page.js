@@ -319,7 +319,14 @@ export default function App() {
           <div className="absolute -inset-6 rounded-[2.5rem] opacity-60 blur-2xl animate-float" style={{ background: `conic-gradient(from 90deg, ${t.primary}, ${t.secondary}, ${t.accent}, ${t.primary})` }} />
           <div className="relative h-[300px] w-[300px] overflow-hidden rounded-[2.2rem] sm:h-[360px] sm:w-[360px]"
             style={{ border: `2px solid rgba(${t.primaryRgb},0.5)`, boxShadow: `0 20px 70px rgba(${t.primaryRgb},0.35)`, background: 'linear-gradient(160deg, rgba(255,255,255,0.06), rgba(0,0,0,0.2))' }}>
-            <img src={SIKH_IMAGE} alt="Ekamnoor Singh" className="h-full w-full object-cover object-top" />
+            <img
+              src={SIKH_IMAGE}
+              alt="Ekamnoor Singh"
+              decoding="async"
+              loading="eager"
+              className="h-full w-full object-cover object-top"
+              style={{ backgroundColor: '#0F172A', WebkitBackfaceVisibility: 'hidden', backfaceVisibility: 'hidden' }}
+            />
           </div>
           <motion.div className="absolute -left-4 top-10 flex items-center gap-1.5 rounded-2xl px-3 py-2 text-xs font-semibold"
             style={{ background: 'rgba(10,12,20,0.8)', border: `1px solid rgba(${t.primaryRgb},0.4)`, backdropFilter: 'blur(8px)' }}
