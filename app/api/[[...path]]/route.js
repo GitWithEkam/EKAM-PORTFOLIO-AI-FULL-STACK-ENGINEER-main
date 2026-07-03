@@ -14,6 +14,11 @@ if (!cached) cached = global._mongoCache = { client: null, promise: null };
 
 async function getDb() {
   if (cached.client) return cached.client.db(DB_NAME);
+
+  if (!MONGO_URL || !MONGO_URL.includes('mongodb')) {
+    throw new Error('MongoDB connection string is not configured');
+  }
+
   if (!cached.promise) cached.promise = new MongoClient(MONGO_URL, { maxPoolSize: 10 }).connect();
   cached.client = await cached.promise;
   return cached.client.db(DB_NAME);
@@ -28,6 +33,81 @@ function cors(res) {
   res.headers.set('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   return res;
+}
+
+async function readJsonBody(request) {
+  try {
+    const text = await request.text();
+    if (!text) return {};
+    return JSON.parse(text);
+  } catch (e) {
+    return {};
+  }
+}
+
+function getFallbackReply(message = '') {
+  const q = (message || '').toLowerCase();
+
+  if (q.includes('project') || q.includes('work')) {
+    return "Ekamnoor's standout projects include PitchRoute, the AI Virtual University Assistant, and Smart Attendance Lite. They show his strength in building AI products, workflow automation, and dependable full-stack systems.";
+  }
+
+  if (q.includes('tech') || q.includes('stack') || q.includes('language') || q.includes('framework')) {
+    return "Ekamnoor works with Python, JavaScript, C++, React, Node.js, FastAPI, MongoDB, and AI tools like OpenAI, Gemini, Claude, and n8n. He is especially focused on practical AI products and scalable web systems.";
+  }
+
+  if (q.includes('contact') || q.includes('email') || q.includes('linkedin') || q.includes('hire') || q.includes('connect')) {
+    return "You can reach Ekamnoor at ekamnoor.career@gmail.com or connect with him on LinkedIn at https://www.linkedin.com/in/ekamnoor-singh-aspiringaiengineer. He is open to internships and collaboration opportunities.";
+  }
+
+  if (q.includes('cgpa') || q.includes('education') || q.includes('college') || q.includes('university')) {
+    return "Ekamnoor is a B.Tech Computer Science student with a current CGPA of 8.33. He studies at Sardar Beant Singh State University and has strong academic results from his earlier schooling as well.";
+  }
+
+  if (q.includes('achievement') || q.includes('hackathon') || q.includes('award')) {
+    return "He has earned recognition including 1st Place at CODE STORM 2026, runner-up at the Iron Labs AI x AIC Delhi Hackathon, and Student of the Year 2022. Those wins reflect both technical depth and leadership.";
+  }
+
+  return "I can help with Ekamnoor's projects, skills, achievements, education, and how to connect with him. Ask me about his work, tech stack, or experience.";
+}
+
+async function getLlmReply(message, llmMessages) {
+  if (!LLM_KEY) return getFallbackReply(message);
+
+  try {
+    const resp = await fetch(`${LLM_BASE}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${LLM_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: MODEL, messages: llmMessages, temperature: 0.75, max_tokens: 600 }),
+    });
+
+    const text = await resp.text();
+    let data = null;
+
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        console.error('LLM response was not valid JSON:', text.slice(0, 400));
+      }
+    }
+
+    if (!resp.ok) {
+      console.error('LLM request failed:', resp.status, text.slice(0, 400));
+      return getFallbackReply(message);
+    }
+
+    const reply =
+      (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) ||
+      (data && typeof data.reply === 'string' && data.reply) ||
+      (data && typeof data.message === 'string' && data.message) ||
+      '';
+
+    return typeof reply === 'string' && reply.trim() ? reply.trim() : getFallbackReply(message);
+  } catch (e) {
+    console.error('LLM request error:', e);
+    return getFallbackReply(message);
+  }
 }
 
 // Forward a row to an external Google Sheets webhook (Apps Script / n8n) if configured.
@@ -92,14 +172,21 @@ CONTACT:
 
 async function handleChat(request) {
   try {
-    const body = await request.json();
+    const body = await readJsonBody(request);
     const message = (body.message || '').toString().slice(0, 2000);
     let sessionId = body.sessionId || uid();
     if (!message.trim()) return cors(NextResponse.json({ error: 'Empty message' }, { status: 400 }));
 
-    const db = await getDb();
-    const col = db.collection('chat_messages');
-    const history = await col.find({ sessionId }).sort({ ts: 1 }).limit(20).toArray();
+    let history = [];
+    let col = null;
+
+    try {
+      const db = await getDb();
+      col = db.collection('chat_messages');
+      history = await col.find({ sessionId }).sort({ ts: 1 }).limit(20).toArray();
+    } catch (e) {
+      console.error('MongoDB history unavailable for chat:', e);
+    }
 
     const llmMessages = [
       { role: 'system', content: SYSTEM_PROMPT },
@@ -107,32 +194,26 @@ async function handleChat(request) {
       { role: 'user', content: message },
     ];
 
-    const resp = await fetch(`${LLM_BASE}/chat/completions`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${LLM_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: MODEL, messages: llmMessages, temperature: 0.75, max_tokens: 600 }),
-    });
+    const reply = await getLlmReply(message, llmMessages);
 
-    const data = await resp.json();
-    const reply =
-      (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) ||
-      'Shukrana for your patience \ud83d\ude4f I had a small hiccup \u2014 please ask me again about Ekamnoor.';
-
-    const now = new Date();
-    await col.insertMany([
-      { id: uid(), sessionId, role: 'user', content: message, ts: now },
-      { id: uid(), sessionId, role: 'assistant', content: reply, ts: new Date(now.getTime() + 1) },
-    ]);
+    if (col) {
+      const now = new Date();
+      await col.insertMany([
+        { id: uid(), sessionId, role: 'user', content: message, ts: now },
+        { id: uid(), sessionId, role: 'assistant', content: reply, ts: new Date(now.getTime() + 1) },
+      ]);
+    }
 
     return cors(NextResponse.json({ sessionId, reply }));
   } catch (e) {
-    return cors(NextResponse.json({ reply: 'I had trouble reaching my brain just now \ud83d\ude4f Please try again in a moment.', error: String(e) }, { status: 200 }));
+    const fallbackBody = await readJsonBody(request);
+    return cors(NextResponse.json({ reply: getFallbackReply((fallbackBody.message || '').toString()), error: String(e) }, { status: 200 }));
   }
 }
 
 async function handleContact(request) {
   try {
-    const body = await request.json();
+    const body = await readJsonBody(request);
     const doc = {
       id: uid(),
       name: (body.name || '').toString().slice(0, 200),
@@ -152,7 +233,7 @@ async function handleContact(request) {
 
 async function handleLead(request) {
   try {
-    const body = await request.json();
+    const body = await readJsonBody(request);
     const doc = {
       id: uid(),
       type: (body.type || 'general').toString().slice(0, 50),
@@ -192,13 +273,28 @@ async function handleAdmin(request) {
     const { searchParams } = new URL(request.url);
     const key = searchParams.get('key');
     if (!key || key !== ADMIN_PASSWORD) return cors(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }));
-    const db = await getDb();
-    const [contacts, leads, chats, stats] = await Promise.all([
-      db.collection('contact_messages').find({}).sort({ ts: -1 }).limit(1000).toArray(),
-      db.collection('leads').find({}).sort({ ts: -1 }).limit(1000).toArray(),
-      db.collection('chat_messages').find({}).sort({ ts: -1 }).limit(1000).toArray(),
-      db.collection('site_stats').findOne({ _id: 'visits' }),
-    ]);
+
+    let contacts = [];
+    let leads = [];
+    let chats = [];
+    let stats = null;
+
+    try {
+      const db = await getDb();
+      const results = await Promise.all([
+        db.collection('contact_messages').find({}).sort({ ts: -1 }).limit(1000).toArray(),
+        db.collection('leads').find({}).sort({ ts: -1 }).limit(1000).toArray(),
+        db.collection('chat_messages').find({}).sort({ ts: -1 }).limit(1000).toArray(),
+        db.collection('site_stats').findOne({ _id: 'visits' }),
+      ]);
+      contacts = results[0] || [];
+      leads = results[1] || [];
+      chats = results[2] || [];
+      stats = results[3] || null;
+    } catch (dbError) {
+      console.error('Admin dashboard DB error:', dbError);
+    }
+
     const clean = (arr) => arr.map((r) => { const { _id, ...rest } = r; return rest; });
     return cors(NextResponse.json({ visits: (stats && stats.count) || 0, contacts: clean(contacts), leads: clean(leads), chats: clean(chats) }));
   } catch (e) {
