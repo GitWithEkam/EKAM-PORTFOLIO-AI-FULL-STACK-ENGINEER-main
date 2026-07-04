@@ -12,6 +12,37 @@ const SHEETS_WEBHOOK_URL = process.env.SHEETS_WEBHOOK_URL || '';
 let cached = global._mongoCache;
 if (!cached) cached = global._mongoCache = { client: null, promise: null };
 
+const fallbackStore = globalThis.__portfolioFallbackStore || (globalThis.__portfolioFallbackStore = {
+  visits: 0,
+  contacts: [],
+  leads: [],
+  chats: [],
+});
+
+function getFallbackStore() {
+  if (!globalThis.__portfolioFallbackStore) {
+    globalThis.__portfolioFallbackStore = { visits: 0, contacts: [], leads: [], chats: [] };
+  }
+  return globalThis.__portfolioFallbackStore;
+}
+
+function getFallbackSnapshot() {
+  const store = getFallbackStore();
+  return {
+    visits: store.visits || 0,
+    contacts: [...(store.contacts || [])],
+    leads: [...(store.leads || [])],
+    chats: [...(store.chats || [])],
+  };
+}
+
+function appendFallbackItem(type, doc) {
+  const store = getFallbackStore();
+  if (type === 'contact') store.contacts.push(doc);
+  if (type === 'lead') store.leads.push(doc);
+  if (type === 'chat') store.chats.push(doc);
+}
+
 async function getDb() {
   if (cached.client) return cached.client.db(DB_NAME);
 
@@ -186,6 +217,8 @@ async function handleChat(request) {
       history = await col.find({ sessionId }).sort({ ts: 1 }).limit(20).toArray();
     } catch (e) {
       console.error('MongoDB history unavailable for chat:', e);
+      const storeHistory = getFallbackStore().chats.filter((m) => m.sessionId === sessionId).slice(-20);
+      history = storeHistory.map((m) => ({ role: m.role, content: m.content }));
     }
 
     const llmMessages = [
@@ -196,12 +229,21 @@ async function handleChat(request) {
 
     const reply = await getLlmReply(message, llmMessages);
 
+    const now = new Date();
+    const chatMessages = [
+      { id: uid(), sessionId, role: 'user', content: message, ts: now },
+      { id: uid(), sessionId, role: 'assistant', content: reply, ts: new Date(now.getTime() + 1) },
+    ];
+
     if (col) {
-      const now = new Date();
-      await col.insertMany([
-        { id: uid(), sessionId, role: 'user', content: message, ts: now },
-        { id: uid(), sessionId, role: 'assistant', content: reply, ts: new Date(now.getTime() + 1) },
-      ]);
+      try {
+        await col.insertMany(chatMessages);
+      } catch (e) {
+        console.error('MongoDB chat insert failed, using fallback store:', e);
+        chatMessages.forEach((doc) => appendFallbackItem('chat', doc));
+      }
+    } else {
+      chatMessages.forEach((doc) => appendFallbackItem('chat', doc));
     }
 
     return cors(NextResponse.json({ sessionId, reply }));
@@ -222,8 +264,13 @@ async function handleContact(request) {
       ts: new Date(),
     };
     if (!doc.name || !doc.email || !doc.message) return cors(NextResponse.json({ error: 'All fields are required' }, { status: 400 }));
-    const db = await getDb();
-    await db.collection('contact_messages').insertOne(doc);
+    try {
+      const db = await getDb();
+      await db.collection('contact_messages').insertOne(doc);
+    } catch (dbError) {
+      console.error('MongoDB contact insert failed, using fallback store:', dbError);
+      appendFallbackItem('contact', doc);
+    }
     await forwardToSheet({ type: 'contact', name: doc.name, email: doc.email, message: doc.message, ts: doc.ts.toISOString() });
     return cors(NextResponse.json({ ok: true, id: doc.id }));
   } catch (e) {
@@ -243,8 +290,13 @@ async function handleLead(request) {
       ts: new Date(),
     };
     if (!doc.email) return cors(NextResponse.json({ error: 'Email is required' }, { status: 400 }));
-    const db = await getDb();
-    await db.collection('leads').insertOne(doc);
+    try {
+      const db = await getDb();
+      await db.collection('leads').insertOne(doc);
+    } catch (dbError) {
+      console.error('MongoDB lead insert failed, using fallback store:', dbError);
+      appendFallbackItem('lead', doc);
+    }
     await forwardToSheet({ type: doc.type || 'lead', name: doc.name, email: doc.email, message: doc.message, ts: doc.ts.toISOString() });
     return cors(NextResponse.json({ ok: true, id: doc.id }));
   } catch (e) {
@@ -264,7 +316,12 @@ async function handleVisit(method) {
     const doc = await col.findOne({ _id: 'visits' });
     return cors(NextResponse.json({ count: (doc && doc.count) || 0 }));
   } catch (e) {
-    return cors(NextResponse.json({ count: 0, error: String(e) }));
+    const store = getFallbackStore();
+    if (method === 'POST') {
+      store.visits += 1;
+      return cors(NextResponse.json({ count: store.visits }));
+    }
+    return cors(NextResponse.json({ count: store.visits || 0 }));
   }
 }
 
@@ -293,6 +350,11 @@ async function handleAdmin(request) {
       stats = results[3] || null;
     } catch (dbError) {
       console.error('Admin dashboard DB error:', dbError);
+      const snapshot = getFallbackSnapshot();
+      contacts = snapshot.contacts;
+      leads = snapshot.leads;
+      chats = snapshot.chats;
+      stats = { count: snapshot.visits };
     }
 
     const clean = (arr) => arr.map((r) => { const { _id, ...rest } = r; return rest; });
