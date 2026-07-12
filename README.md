@@ -69,7 +69,7 @@ EMERGENT_LLM_KEY=your_emergent_universal_key
 EMERGENT_LLM_BASE_URL=https://integrations.emergentagent.com/llm
 
 # Admin dashboard password (visit /admin)
-ADMIN_PASSWORD=EkamSingh@2026
+ADMIN_PASSWORD=
 
 # OPTIONAL: live Google Sheets / n8n sync (see below). Leave empty to disable.
 SHEETS_WEBHOOK_URL=
